@@ -1,0 +1,5 @@
+{
+  "name": "HyperPhysics Lab",
+  "description": "An interactive collection of mathematical and abstract visual simulations including a 4D Tesseract and Double Pendulum Chaos.",
+  "requestFramePermissions": []
+}
