@@ -60,16 +60,16 @@ export default function Tesseract({ isActive }: TesseractProps) {
       }
     }
 
-    const project = (point: Point4D): Point3D => {
+    const project = (point: Point4D) => {
       // 4D to 3D projection
       // Using perspective projection: w affects the scale
       const distance = 3; // Camera distance from 4D object in w-axis
-      const w = 1 / (distance - point[3]);
+      const wScale = 1 / (distance - point[3]);
       
       const p3d = {
-        x: point[0] * w,
-        y: point[1] * w,
-        z: point[2] * w
+        x: point[0] * wScale,
+        y: point[1] * wScale,
+        z: point[2] * wScale
       };
 
       // 3D to 2D projection (standard perspective)
@@ -80,7 +80,9 @@ export default function Tesseract({ isActive }: TesseractProps) {
       return {
         x: p3d.x * fov * zScale,
         y: p3d.y * fov * zScale,
-        z: p3d.z // Keep z for depth sorting/cueing if needed
+        z: p3d.z,
+        scale: zScale,
+        w: point[3] // Pass original W for 4D depth cues
       };
     };
 
@@ -180,46 +182,89 @@ export default function Tesseract({ isActive }: TesseractProps) {
         return project(rotated);
       });
 
+      // Sort edges by depth (painters algorithm approximation)
+      // We'll use the average Z of the two points
+      const sortedEdges = edges.map(([i, j]) => {
+        const p1 = projectedPoints[i];
+        const p2 = projectedPoints[j];
+        return { i, j, z: (p1.z + p2.z) / 2 };
+      }).sort((a, b) => b.z - a.z); // Draw back to front
+
       // Draw Edges
-      ctx.lineWidth = 2;
       ctx.lineCap = 'round';
 
-      edges.forEach(([i, j]) => {
+      sortedEdges.forEach(({ i, j }) => {
         const p1 = projectedPoints[i];
         const p2 = projectedPoints[j];
 
-        // Depth cueing based on 4D 'w' or 3D 'z' isn't perfect here since we projected, 
-        // but we can use distance from center to fake some depth or just use a cool gradient.
-        // Let's use a distance-based alpha for a "fog" effect.
+        // Calculate depth cues
+        // Scale factor: larger = closer
+        const avgScale = (p1.scale + p2.scale) / 2;
         
-        // Create gradient for line
+        // 4D Depth factor (W coordinate): -1 to 1
+        // We use this to shift hue
+        const avgW = (p1.w + p2.w) / 2;
+        
+        // Map W to Hue: -1 (inner/far in 4D) -> Purple/Blue, 1 (outer/close in 4D) -> Cyan/Green
+        // We want a subtle shift.
+        // Base hue: 190 (Cyan)
+        // Shift: +/- 40
+        const hue1 = 190 + p1.w * 60; 
+        const hue2 = 190 + p2.w * 60;
+
+        // Opacity based on Z-depth (scale)
+        // Scale typically ranges 0.2 (far) to 0.5 (close) in this setup
+        const alpha = Math.min(1, Math.max(0.1, avgScale * 2.5));
+        
+        // Line width based on scale
+        const lineWidth = Math.max(0.5, avgScale * 8);
+
+        // Create gradient
         const grad = ctx.createLinearGradient(cx + p1.x, cy + p1.y, cx + p2.x, cy + p2.y);
-        
-        // Color scheme: Cyan to Magenta based on position
-        grad.addColorStop(0, `rgba(6, 182, 212, ${0.3 + 0.7 * (1 / (1 + Math.abs(p1.z)))} )`); // Cyan
-        grad.addColorStop(1, `rgba(236, 72, 153, ${0.3 + 0.7 * (1 / (1 + Math.abs(p2.z)))} )`); // Pink
+        grad.addColorStop(0, `hsla(${hue1}, 100%, 60%, ${alpha})`);
+        grad.addColorStop(1, `hsla(${hue2}, 100%, 60%, ${alpha})`);
 
         ctx.strokeStyle = grad;
+        ctx.lineWidth = lineWidth;
         
-        // Draw glow
-        ctx.shadowBlur = 15;
-        ctx.shadowColor = 'rgba(6, 182, 212, 0.5)';
+        // Blur effect for depth of field
+        // If scale is very small (far away) or very large (too close), blur it
+        // Focus plane is at some middle scale
+        const focusScale = 0.35;
+        const blurAmount = Math.abs(avgScale - focusScale) * 10;
+        ctx.filter = `blur(${Math.max(0, blurAmount)}px)`;
+        
+        // Glow
+        ctx.shadowBlur = avgScale * 20;
+        ctx.shadowColor = `hsla(${hue1}, 80%, 60%, ${alpha * 0.5})`;
         
         ctx.beginPath();
         ctx.moveTo(cx + p1.x, cy + p1.y);
         ctx.lineTo(cx + p2.x, cy + p2.y);
         ctx.stroke();
       });
+      
+      // Reset filter for vertices
+      ctx.filter = 'none';
 
       // Draw Vertices
       projectedPoints.forEach(p => {
+        // Size based on scale
+        const radius = Math.max(1, p.scale * 10);
+        const alpha = Math.min(1, Math.max(0.2, p.scale * 3));
+        const hue = 190 + p.w * 60;
+
         ctx.fillStyle = '#fff';
-        ctx.shadowBlur = 10;
-        ctx.shadowColor = '#fff';
+        ctx.shadowBlur = radius * 2;
+        ctx.shadowColor = `hsla(${hue}, 100%, 70%, 1)`;
+        ctx.globalAlpha = alpha;
+        
         ctx.beginPath();
-        ctx.arc(cx + p.x, cy + p.y, 3, 0, Math.PI * 2);
+        ctx.arc(cx + p.x, cy + p.y, radius, 0, Math.PI * 2);
         ctx.fill();
       });
+      
+      ctx.globalAlpha = 1;
 
       animationFrameId = requestAnimationFrame(render);
     };
